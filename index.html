@@ -31,6 +31,30 @@
     opacity:0;transition:opacity .25s;z-index:10;text-align:center}
   #msg.show{opacity:1}
   #msg small{display:block;font-weight:400;color:var(--dim);margin-top:4px;font-size:12px}
+  #overlay{position:fixed;inset:0;background:rgba(10,14,20,.88);z-index:20;
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  #overlay.hidden{display:none}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:30px 36px;max-width:460px;width:100%;text-align:center;
+    box-shadow:0 12px 40px rgba(0,0,0,.5)}
+  .card h1{font-size:26px;letter-spacing:2px;margin-bottom:10px}
+  .card h1 span{color:var(--accent)}
+  .card p{color:var(--dim);font-size:13px;line-height:1.6;margin-bottom:8px}
+  .card .keys{font-size:11px;color:var(--dim);margin-bottom:18px}
+  .card .stat{font-size:14px;margin:4px 0}
+  .card .stat b{color:var(--text);font-size:18px}
+  .card .best{color:var(--accent);font-weight:700;font-size:15px;margin:10px 0 18px}
+  .btn{display:inline-block;background:var(--accent);color:#04140a;border:none;
+    font-family:inherit;font-size:16px;font-weight:800;letter-spacing:1px;
+    padding:13px 40px;border-radius:8px;cursor:pointer;
+    transition:transform .08s,filter .12s}
+  .btn:hover{filter:brightness(1.12)}
+  .btn:active{transform:scale(.97)}
+  .btn.ghost{background:transparent;color:var(--dim);border:1px solid var(--line);
+    font-weight:600;font-size:13px;padding:11px 22px;margin-left:10px}
+  #pauseBtn{background:transparent;color:var(--dim);border:1px solid var(--line);
+    border-radius:6px;font-family:inherit;font-size:12px;padding:4px 12px;cursor:pointer}
+  #pauseBtn:hover{color:var(--text);border-color:var(--dim)}
 </style>
 </head>
 <body>
@@ -43,12 +67,36 @@
       <div>STROKES <b id="hStrokes">0</b></div>
       <div>TOTAL <b id="hTotal">0</b></div>
       <div>BEST <b id="hBest">—</b></div>
+      <button id="pauseBtn" type="button">❚❚ PAUSE</button>
     </div>
   </header>
   <div id="stage"><canvas id="cv" width="720" height="480"></canvas></div>
   <footer>LaunchTower — <a href="https://pennypenguinapp-beep.github.io/" target="_blank" rel="noopener">more free pixel tools &amp; games</a></footer>
 </div>
 <div id="msg"></div>
+<div id="overlay">
+  <div class="card" id="cardStart">
+    <h1>PIXEL <span>GOLF</span></h1>
+    <p>Drag (or swipe) to aim, release to putt. Sink all 9 holes in as few strokes as you can.</p>
+    <p class="keys">MOUSE / TOUCH — drag &amp; release &nbsp;·&nbsp; SPACE — start &nbsp;·&nbsp; P / ESC — pause</p>
+    <div class="best" id="ovBestStart"></div>
+    <button class="btn" id="playBtn" type="button">▶ PLAY</button>
+  </div>
+  <div class="card" id="cardOver" style="display:none">
+    <h1>ROUND <span>COMPLETE</span></h1>
+    <div class="stat">TOTAL <b id="ovTotal">0</b> STROKES</div>
+    <div class="stat">BEST <b id="ovBest">—</b></div>
+    <div class="best" id="ovNewBest" style="display:none">★ NEW BEST! ★</div>
+    <button class="btn" id="againBtn" type="button">▶ PLAY AGAIN</button>
+    <button class="btn ghost" id="menuBtn" type="button">MENU</button>
+  </div>
+  <div class="card" id="cardPause" style="display:none">
+    <h1>PAUSED</h1>
+    <p>Take a breath. The ball is waiting.</p>
+    <button class="btn" id="resumeBtn" type="button">▶ RESUME</button>
+    <button class="btn ghost" id="quitBtn" type="button">QUIT TO MENU</button>
+  </div>
+</div>
 <script>
 "use strict";
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
@@ -58,6 +106,32 @@ const hHole=document.getElementById('hHole'),hPar=document.getElementById('hPar'
       hStrokes=document.getElementById('hStrokes'),hTotal=document.getElementById('hTotal'),
       hBest=document.getElementById('hBest');
 const BEST_KEY='launchtower_pixelgolf_best';
+
+// ---------- WebAudio (no files) ----------
+let AC=null;
+function audio(){
+  if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)();}catch(e){}}
+  if(AC&&AC.state==='suspended')AC.resume();
+  return AC;
+}
+function tone(f,dur,type,vol,when){
+  const ac=audio();if(!ac)return;
+  const t=ac.currentTime+(when||0);
+  const o=ac.createOscillator(),g=ac.createGain();
+  o.type=type||'sine';o.frequency.setValueAtTime(f,t);
+  g.gain.setValueAtTime(vol||0.12,t);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g);g.connect(ac.destination);
+  o.start(t);o.stop(t+dur+0.02);
+}
+const sfx={
+  hit:()=>tone(180,0.08,'triangle',0.15),
+  wall:()=>tone(120,0.05,'square',0.06),
+  bumper:()=>tone(320,0.09,'square',0.1),
+  sand:()=>tone(90,0.12,'sawtooth',0.05),
+  sink:()=>{tone(523,0.12,'sine',0.16);tone(659,0.12,'sine',0.14,0.1);tone(784,0.2,'sine',0.14,0.2);},
+  best:()=>{[523,659,784,1047].forEach((f,i)=>tone(f,0.14,'sine',0.14,i*0.11));}
+};
 
 // ---------- physics constants ----------
 const FRICTION=0.985, SAND_FRICTION=0.90, STOP_EPS=0.04,
@@ -106,6 +180,7 @@ const HOLES=[
 
 // ---------- state ----------
 let holeIdx=0, strokes=0, totalStrokes=0, holeDone=false, finished=false;
+let paused=false, started=false;
 let ball={x:0,y:0,vx:0,vy:0,moving:false};
 let aiming=false, aimStart=null, aimCur=null;
 let best=null;
@@ -149,8 +224,8 @@ function holeComplete(){
     if(best===null||totalStrokes<best){best=totalStrokes;newBest=true;
       try{localStorage.setItem(BEST_KEY,String(best));}catch(e){}}
     hBest.textContent=best;
-    showMsg('ROUND COMPLETE!  '+totalStrokes+' strokes'+(newBest?'  ·  NEW BEST!':''),
-      'tap / click / press space to play again',999999);
+    if(newBest)sfx.best();
+    showOverScreen(newBest);
   }
 }
 function resetRound(){
@@ -158,6 +233,57 @@ function resetRound(){
   msgEl.classList.remove('show');
   loadHole(0);
 }
+
+// ---------- overlay screens ----------
+const overlay=document.getElementById('overlay');
+const cardStart=document.getElementById('cardStart'),
+      cardOver=document.getElementById('cardOver'),
+      cardPause=document.getElementById('cardPause');
+function showCard(c){
+  cardStart.style.display=c===cardStart?'':'none';
+  cardOver.style.display=c===cardOver?'':'none';
+  cardPause.style.display=c===cardPause?'':'none';
+  overlay.classList.remove('hidden');
+}
+function hideOverlay(){overlay.classList.add('hidden');}
+function showOverScreen(newBest){
+  document.getElementById('ovTotal').textContent=totalStrokes;
+  document.getElementById('ovBest').textContent=best!==null?best:'—';
+  document.getElementById('ovNewBest').style.display=newBest?'':'none';
+  showCard(cardOver);
+}
+function updateStartBest(){
+  document.getElementById('ovBestStart').textContent=
+    best!==null?('BEST ROUND: '+best+' STROKES'):'';
+}
+function startGame(){
+  audio();
+  resetRound();
+  started=true;
+  hideOverlay();
+}
+function setPaused(p){
+  if(!started||finished||p===paused)return;
+  paused=p;
+  if(p)showCard(cardPause);else hideOverlay();
+}
+document.getElementById('playBtn').addEventListener('click',startGame);
+document.getElementById('againBtn').addEventListener('click',startGame);
+document.getElementById('menuBtn').addEventListener('click',()=>{
+  finished=false;started=false;paused=false;
+  updateStartBest();showCard(cardStart);
+});
+document.getElementById('resumeBtn').addEventListener('click',()=>setPaused(false));
+document.getElementById('quitBtn').addEventListener('click',()=>{
+  finished=false;started=false;paused=false;
+  updateStartBest();showCard(cardStart);
+});
+document.getElementById('pauseBtn').addEventListener('click',()=>{
+  if(started&&!finished)setPaused(!paused);
+});
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden)setPaused(true);
+});
 
 // ---------- physics ----------
 function inSand(x,y){
@@ -176,6 +302,7 @@ function step(){
   // cup check (slow + near)
   const dx=ball.x-h.cup[0],dy=ball.y-h.cup[1];
   if(dx*dx+dy*dy<22*22&&Math.hypot(ball.vx,ball.vy)<6.5){
+    sfx.sink();
     ball.x=h.cup[0];ball.y=h.cup[1];ball.vx=0;ball.vy=0;ball.moving=false;
     strokes++;hStrokes.textContent=strokes;
     holeComplete();return;
@@ -189,7 +316,7 @@ function step(){
       const d=Math.sqrt(d2)||0.001,ux=ddx/d,uy=ddy/d;
       ball.x=nx+ux*BALL_R;ball.y=ny+uy*BALL_R;
       const dot=ball.vx*ux+ball.vy*uy;
-      if(dot<0){ball.vx-=(1+WALL_BOUNCE)*dot*ux;ball.vy-=(1+WALL_BOUNCE)*dot*uy;}
+      if(dot<0){ball.vx-=(1+WALL_BOUNCE)*dot*ux;ball.vy-=(1+WALL_BOUNCE)*dot*uy;sfx.wall();}
     }
   }
   // bumpers
@@ -200,7 +327,7 @@ function step(){
       const d=Math.sqrt(d2)||0.001,ux=bx/d,uy=by/d;
       ball.x=b[0]+ux*rr;ball.y=b[1]+uy*rr;
       const dot=ball.vx*ux+ball.vy*uy;
-      if(dot<0){ball.vx-=(1+BUMPER_BOUNCE)*dot*ux;ball.vy-=(1+BUMPER_BOUNCE)*dot*uy;}
+      if(dot<0){ball.vx-=(1+BUMPER_BOUNCE)*dot*ux;ball.vy-=(1+BUMPER_BOUNCE)*dot*uy;sfx.bumper();}
     }
   }
   // safety clamp
@@ -217,7 +344,7 @@ function canvasPos(e){
   const cy=(e.touches?e.touches[0].clientY:e.clientY);
   return{x:(cx-r.left)*(W/r.width),y:(cy-r.top)*(H/r.height)};
 }
-function canAim(){return !ball.moving&&!holeDone&&!finished;}
+function canAim(){return started&&!paused&&!ball.moving&&!holeDone&&!finished;}
 function down(e){
   if(!canAim())return;
   aiming=true;aimStart=canvasPos(e);aimCur=aimStart;
@@ -237,6 +364,7 @@ function up(e){
   ball.vx=dx/len*power;ball.vy=dy/len*power;
   ball.moving=true;
   strokes++;hStrokes.textContent=strokes;
+  sfx.hit();
   aimStart=null;aimCur=null;
 }
 cv.addEventListener('mousedown',down);
@@ -247,11 +375,13 @@ cv.addEventListener('touchmove',move,{passive:false});
 cv.addEventListener('touchend',up);
 window.addEventListener('keydown',e=>{
   if(e.code==='Space'||e.code==='Enter'){
-    if(finished)resetRound();
+    if(!started)startGame();
+    else if(finished)startGame();
     e.preventDefault();
+  }else if(e.code==='KeyP'||e.code==='Escape'){
+    if(started&&!finished)setPaused(!paused);
   }
 });
-cv.addEventListener('click',()=>{if(finished)resetRound();});
 
 // ---------- rendering ----------
 function px(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));}
@@ -341,7 +471,8 @@ function render(){
   drawAim();
 }
 function loop(){
-  step();render();
+  if(!paused)step();
+  render();
   requestAnimationFrame(loop);
 }
 
@@ -349,13 +480,18 @@ function loop(){
 function fit(){
   const stage=document.getElementById('stage');
   const availW=stage.clientWidth-16,availH=stage.clientHeight-16;
-  const scale=Math.min(availW/W,availH/H,1);
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const scale=Math.min(availW/W,availH/H);
   cv.style.width=(W*scale)+'px';
   cv.style.height=(H*scale)+'px';
 }
 window.addEventListener('resize',fit);
 
 loadHole(0);
+updateStartBest();
+showCard(cardStart);
 fit();
 loop();
 </script>
