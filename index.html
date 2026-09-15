@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Pixel Golf — LaunchTower</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --line:#2d333b; --text:#e6edf3;
+    --dim:#8b949e; --accent:#3fb950; --accent2:#58a6ff; --sand:#d4a24c;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;background:var(--bg);color:var(--text);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden}
+  #wrap{display:flex;flex-direction:column;height:100%;max-width:900px;margin:0 auto}
+  header{display:flex;align-items:center;justify-content:space-between;
+    padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap;gap:6px}
+  header .title{font-size:15px;font-weight:700;letter-spacing:1px}
+  header .title span{color:var(--accent)}
+  .hud{display:flex;gap:10px;font-size:12px;color:var(--dim);align-items:center;flex-wrap:wrap}
+  .hud b{color:var(--text)}
+  #stage{flex:1;display:flex;align-items:center;justify-content:center;padding:8px;min-height:0}
+  canvas{background:#0a2e1a;border:2px solid var(--line);border-radius:6px;
+    touch-action:none;max-width:100%;max-height:100%;image-rendering:pixelated;cursor:crosshair}
+  footer{padding:6px 12px;border-top:1px solid var(--line);background:var(--panel);
+    font-size:11px;color:var(--dim);text-align:center}
+  footer a{color:var(--accent2);text-decoration:none}
+  #msg{position:fixed;left:50%;top:14%;transform:translateX(-50%);
+    background:var(--panel);border:1px solid var(--accent);border-radius:8px;
+    padding:14px 26px;font-size:16px;font-weight:700;pointer-events:none;
+    opacity:0;transition:opacity .25s;z-index:10;text-align:center}
+  #msg.show{opacity:1}
+  #msg small{display:block;font-weight:400;color:var(--dim);margin-top:4px;font-size:12px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <div class="title">PIXEL <span>GOLF</span></div>
+    <div class="hud">
+      <div>HOLE <b id="hHole">1</b>/9</div>
+      <div>PAR <b id="hPar">3</b></div>
+      <div>STROKES <b id="hStrokes">0</b></div>
+      <div>TOTAL <b id="hTotal">0</b></div>
+      <div>BEST <b id="hBest">—</b></div>
+    </div>
+  </header>
+  <div id="stage"><canvas id="cv" width="720" height="480"></canvas></div>
+  <footer>LaunchTower — <a href="https://pennypenguinapp-beep.github.io/" target="_blank" rel="noopener">more free pixel tools &amp; games</a></footer>
+</div>
+<div id="msg"></div>
+<script>
+"use strict";
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const W=720,H=480;
+const msgEl=document.getElementById('msg');
+const hHole=document.getElementById('hHole'),hPar=document.getElementById('hPar'),
+      hStrokes=document.getElementById('hStrokes'),hTotal=document.getElementById('hTotal'),
+      hBest=document.getElementById('hBest');
+const BEST_KEY='launchtower_pixelgolf_best';
+
+// ---------- physics constants ----------
+const FRICTION=0.985, SAND_FRICTION=0.90, STOP_EPS=0.04,
+      WALL_BOUNCE=0.72, BUMPER_BOUNCE=1.06, MAX_POWER=13, BALL_R=6;
+
+// ---------- hole definitions ----------
+// walls: [x,y,w,h]  bumpers: [x,y,r]  sand: [x,y,w,h]
+const HOLES=[
+ {par:3, ball:[110,240], cup:[610,240],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [260,120,20,140],[440,220,20,140]],
+  bumpers:[[360,120,16],[360,360,16]], sand:[]},
+ {par:3, ball:[110,120], cup:[610,360],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [300,0,20,300],[420,180,20,300]],
+  bumpers:[], sand:[[150,300,180,90]]},
+ {par:4, ball:[110,360], cup:[610,120],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [200,150,20,330],[380,0,20,330],[560,150,20,330]],
+  bumpers:[[300,240,14]], sand:[[430,330,120,90]]},
+ {par:3, ball:[360,400], cup:[360,80],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [120,180,200,20],[400,280,200,20]],
+  bumpers:[[360,220,18]], sand:[[100,60,140,80],[480,60,140,80]]},
+ {par:4, ball:[100,240], cup:[620,240],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [220,0,20,160],[220,320,20,160],[400,160,20,160],[560,0,20,160],[560,320,20,160]],
+  bumpers:[[310,240,16],[480,240,16]], sand:[[250,180,120,120]]},
+ {par:3, ball:[110,240], cup:[610,240],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [330,100,60,60],[330,320,60,60]],
+  bumpers:[[360,240,20]], sand:[]},
+ {par:4, ball:[360,410], cup:[360,90],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [150,150,150,20],[420,150,150,20],[150,310,150,20],[420,310,150,20]],
+  bumpers:[[240,230,14],[480,230,14]], sand:[[280,180,160,120]]},
+ {par:4, ball:[100,100], cup:[620,380],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [180,180,360,20],[180,180,20,220],[540,180,20,220]],
+  bumpers:[[360,300,16]], sand:[[560,100,120,80]]},
+ {par:5, ball:[80,240], cup:[640,240],
+  walls:[[0,0,W,10],[0,H-10,W,10],[0,0,10,H],[W-10,0,10,H],
+         [160,0,20,150],[160,330,20,150],[320,150,20,180],[480,0,20,150],[480,330,20,150]],
+  bumpers:[[240,240,14],[400,240,14],[560,240,14]], sand:[[200,180,80,120],[360,180,80,120],[520,180,80,120]]}
+];
+
+// ---------- state ----------
+let holeIdx=0, strokes=0, totalStrokes=0, holeDone=false, finished=false;
+let ball={x:0,y:0,vx:0,vy:0,moving:false};
+let aiming=false, aimStart=null, aimCur=null;
+let best=null;
+try{const b=localStorage.getItem(BEST_KEY);if(b)best=parseInt(b,10);}catch(e){}
+
+function loadHole(i){
+  const h=HOLES[i];
+  ball.x=h.ball[0];ball.y=h.ball[1];ball.vx=0;ball.vy=0;ball.moving=false;
+  strokes=0;holeDone=false;
+  hHole.textContent=i+1;hPar.textContent=h.par;hStrokes.textContent=0;
+  hTotal.textContent=totalStrokes;
+  hBest.textContent=best!==null?best:'—';
+}
+function showMsg(t,sub,ms){
+  msgEl.innerHTML=t+(sub?'<small>'+sub+'</small>':'');
+  msgEl.classList.add('show');
+  clearTimeout(showMsg._t);
+  showMsg._t=setTimeout(()=>msgEl.classList.remove('show'),ms||1600);
+}
+function scoreName(s,par){
+  if(s===1)return'HOLE IN ONE!';
+  if(s===par)return'PAR';
+  if(s===par-1)return'BIRDIE!';
+  if(s===par-2)return'EAGLE!';
+  if(s===par+1)return'BOGEY';
+  if(s===par+2)return'DOUBLE BOGEY';
+  return s>par?'+'+(s-par):''+(par-s);
+}
+function holeComplete(){
+  holeDone=true;
+  const h=HOLES[holeIdx];
+  totalStrokes+=strokes;
+  hTotal.textContent=totalStrokes;
+  if(holeIdx<8){
+    showMsg(scoreName(strokes,h.par)+'  ·  '+strokes+' stroke'+(strokes===1?'':'s'),
+      'next hole in 1.4s…',1400);
+    setTimeout(()=>{holeIdx++;loadHole(holeIdx);},1500);
+  }else{
+    finished=true;
+    let newBest=false;
+    if(best===null||totalStrokes<best){best=totalStrokes;newBest=true;
+      try{localStorage.setItem(BEST_KEY,String(best));}catch(e){}}
+    hBest.textContent=best;
+    showMsg('ROUND COMPLETE!  '+totalStrokes+' strokes'+(newBest?'  ·  NEW BEST!':''),
+      'tap / click / press space to play again',999999);
+  }
+}
+function resetRound(){
+  holeIdx=0;totalStrokes=0;finished=false;
+  msgEl.classList.remove('show');
+  loadHole(0);
+}
+
+// ---------- physics ----------
+function inSand(x,y){
+  const h=HOLES[holeIdx];
+  for(const s of h.sand)
+    if(x>s[0]&&x<s[0]+s[2]&&y>s[1]&&y<s[1]+s[3])return true;
+  return false;
+}
+function step(){
+  if(!ball.moving||holeDone||finished)return;
+  const h=HOLES[holeIdx];
+  const fr=inSand(ball.x,ball.y)?SAND_FRICTION:FRICTION;
+  ball.x+=ball.vx;ball.y+=ball.vy;
+  ball.vx*=fr;ball.vy*=fr;
+
+  // cup check (slow + near)
+  const dx=ball.x-h.cup[0],dy=ball.y-h.cup[1];
+  if(dx*dx+dy*dy<22*22&&Math.hypot(ball.vx,ball.vy)<6.5){
+    ball.x=h.cup[0];ball.y=h.cup[1];ball.vx=0;ball.vy=0;ball.moving=false;
+    strokes++;hStrokes.textContent=strokes;
+    holeComplete();return;
+  }
+  // walls
+  for(const w of h.walls){
+    const nx=Math.max(w[0],Math.min(ball.x,w[0]+w[2]));
+    const ny=Math.max(w[1],Math.min(ball.y,w[1]+w[3]));
+    const ddx=ball.x-nx,ddy=ball.y-ny,d2=ddx*ddx+ddy*ddy;
+    if(d2<BALL_R*BALL_R){
+      const d=Math.sqrt(d2)||0.001,ux=ddx/d,uy=ddy/d;
+      ball.x=nx+ux*BALL_R;ball.y=ny+uy*BALL_R;
+      const dot=ball.vx*ux+ball.vy*uy;
+      if(dot<0){ball.vx-=(1+WALL_BOUNCE)*dot*ux;ball.vy-=(1+WALL_BOUNCE)*dot*uy;}
+    }
+  }
+  // bumpers
+  for(const b of h.bumpers){
+    const bx=ball.x-b[0],by=ball.y-b[1],d2=bx*bx+by*by;
+    const rr=BALL_R+b[2];
+    if(d2<rr*rr){
+      const d=Math.sqrt(d2)||0.001,ux=bx/d,uy=by/d;
+      ball.x=b[0]+ux*rr;ball.y=b[1]+uy*rr;
+      const dot=ball.vx*ux+ball.vy*uy;
+      if(dot<0){ball.vx-=(1+BUMPER_BOUNCE)*dot*ux;ball.vy-=(1+BUMPER_BOUNCE)*dot*uy;}
+    }
+  }
+  // safety clamp
+  ball.x=Math.max(BALL_R+10,Math.min(W-BALL_R-10,ball.x));
+  ball.y=Math.max(BALL_R+10,Math.min(H-BALL_R-10,ball.y));
+
+  if(Math.hypot(ball.vx,ball.vy)<STOP_EPS){ball.vx=0;ball.vy=0;ball.moving=false;}
+}
+
+// ---------- input ----------
+function canvasPos(e){
+  const r=cv.getBoundingClientRect();
+  const cx=(e.touches?e.touches[0].clientX:e.clientX);
+  const cy=(e.touches?e.touches[0].clientY:e.clientY);
+  return{x:(cx-r.left)*(W/r.width),y:(cy-r.top)*(H/r.height)};
+}
+function canAim(){return !ball.moving&&!holeDone&&!finished;}
+function down(e){
+  if(!canAim())return;
+  aiming=true;aimStart=canvasPos(e);aimCur=aimStart;
+  e.preventDefault();
+}
+function move(e){
+  if(!aiming)return;
+  aimCur=canvasPos(e);e.preventDefault();
+}
+function up(e){
+  if(!aiming)return;aiming=false;
+  if(!canAim())return;
+  const dx=aimStart.x-aimCur.x,dy=aimStart.y-aimCur.y;
+  const len=Math.hypot(dx,dy);
+  if(len<8){aimStart=null;aimCur=null;return;}
+  const power=Math.min(len/22,MAX_POWER);
+  ball.vx=dx/len*power;ball.vy=dy/len*power;
+  ball.moving=true;
+  strokes++;hStrokes.textContent=strokes;
+  aimStart=null;aimCur=null;
+}
+cv.addEventListener('mousedown',down);
+window.addEventListener('mousemove',move);
+window.addEventListener('mouseup',up);
+cv.addEventListener('touchstart',down,{passive:false});
+cv.addEventListener('touchmove',move,{passive:false});
+cv.addEventListener('touchend',up);
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'||e.code==='Enter'){
+    if(finished)resetRound();
+    e.preventDefault();
+  }
+});
+cv.addEventListener('click',()=>{if(finished)resetRound();});
+
+// ---------- rendering ----------
+function px(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));}
+function drawHole(){
+  const h=HOLES[holeIdx];
+  // fairway
+  px(0,0,W,H,'#123a24');
+  // subtle mow stripes
+  ctx.fillStyle='rgba(255,255,255,0.025)';
+  for(let x=0;x<W;x+=48)ctx.fillRect(x,0,24,H);
+  // sand
+  for(const s of h.sand){
+    px(s[0],s[1],s[2],s[3],'#c99a45');
+    ctx.fillStyle='rgba(0,0,0,0.15)';
+    for(let i=0;i<s[2]*s[3]/220;i++){
+      const sx=s[0]+((i*97)%s[2]),sy=s[1]+((i*53)%s[3]);
+      ctx.fillRect(sx,sy,2,2);
+    }
+  }
+  // walls
+  for(const w of h.walls){
+    px(w[0],w[1],w[2],w[3],'#3d444d');
+    px(w[0],w[1],w[2],Math.min(3,w[3]),'#5b6570');
+  }
+  // bumpers
+  for(const b of h.bumpers){
+    ctx.beginPath();ctx.arc(b[0],b[1],b[2],0,7);
+    ctx.fillStyle='#e5484d';ctx.fill();
+    ctx.beginPath();ctx.arc(b[0],b[1],b[2]*0.55,0,7);
+    ctx.fillStyle='#ff8a8d';ctx.fill();
+  }
+  // cup
+  ctx.beginPath();ctx.arc(h.cup[0],h.cup[1],11,0,7);
+  ctx.fillStyle='#0a0f0c';ctx.fill();
+  ctx.beginPath();ctx.arc(h.cup[0],h.cup[1],11,0,7);
+  ctx.strokeStyle='#3fb950';ctx.lineWidth=2;ctx.stroke();
+  // flag
+  px(h.cup[0]-1,h.cup[1]-34,2,34,'#c9d1d9');
+  ctx.beginPath();
+  ctx.moveTo(h.cup[0]+1,h.cup[1]-34);
+  ctx.lineTo(h.cup[0]+18,h.cup[1]-27);
+  ctx.lineTo(h.cup[0]+1,h.cup[1]-20);
+  ctx.closePath();ctx.fillStyle='#e5484d';ctx.fill();
+}
+function drawBall(){
+  ctx.beginPath();ctx.arc(ball.x,ball.y,BALL_R,0,7);
+  ctx.fillStyle='#f0f6fc';ctx.fill();
+  ctx.beginPath();ctx.arc(ball.x-2,ball.y-2,2,0,7);
+  ctx.fillStyle='#ffffff';ctx.fill();
+  ctx.beginPath();ctx.arc(ball.x,ball.y,BALL_R,0,7);
+  ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1;ctx.stroke();
+}
+function drawAim(){
+  if(!aiming||!aimStart||!aimCur)return;
+  const dx=aimStart.x-aimCur.x,dy=aimStart.y-aimCur.y;
+  const len=Math.hypot(dx,dy);
+  if(len<2)return;
+  const power=Math.min(len/22,MAX_POWER);
+  const ux=dx/len,uy=dy/len;
+  // direction line from ball
+  const L=40+power*9;
+  ctx.save();
+  ctx.setLineDash([6,5]);
+  ctx.beginPath();
+  ctx.moveTo(ball.x,ball.y);
+  ctx.lineTo(ball.x+ux*L,ball.y+uy*L);
+  ctx.strokeStyle='rgba(255,255,255,0.7)';ctx.lineWidth=2;ctx.stroke();
+  ctx.setLineDash([]);
+  // arrow head
+  const ax=ball.x+ux*L,ay=ball.y+uy*L;
+  ctx.beginPath();
+  ctx.moveTo(ax,ay);
+  ctx.lineTo(ax-ux*10-uy*6,ay-uy*10+ux*6);
+  ctx.lineTo(ax-ux*10+uy*6,ay-uy*10-ux*6);
+  ctx.closePath();ctx.fillStyle='rgba(255,255,255,0.85)';ctx.fill();
+  // power bar
+  const pw=120,ph=8,px0=ball.x-pw/2,py0=ball.y+18;
+  px(px0-1,py0-1,pw+2,ph+2,'rgba(0,0,0,0.5)');
+  const t=power/MAX_POWER;
+  px(px0,py0,pw*t,ph,t<0.4?'#3fb950':t<0.75?'#d29922':'#e5484d');
+  ctx.restore();
+}
+function render(){
+  ctx.clearRect(0,0,W,H);
+  drawHole();
+  drawBall();
+  drawAim();
+}
+function loop(){
+  step();render();
+  requestAnimationFrame(loop);
+}
+
+// ---------- responsive canvas ----------
+function fit(){
+  const stage=document.getElementById('stage');
+  const availW=stage.clientWidth-16,availH=stage.clientHeight-16;
+  const scale=Math.min(availW/W,availH/H,1);
+  cv.style.width=(W*scale)+'px';
+  cv.style.height=(H*scale)+'px';
+}
+window.addEventListener('resize',fit);
+
+loadHole(0);
+fit();
+loop();
+</script>
+</body>
+</html>
